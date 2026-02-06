@@ -1,169 +1,64 @@
-import { GoogleGenAI, Type } from "@google/genai";
-import { GeminiModel, GenerationRequest, SectionContent, TranslationRequest, ImageGenerationRequest } from "../types";
+import { httpsCallable } from "firebase/functions";
+import { functions } from "../lib/firebase";
+import { GenerationRequest, SectionContent, TranslationRequest, ImageGenerationRequest } from "../types";
 
-const getClient = () => {
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
-};
+// PROD UPDATE: API Keys are no longer used here.
+// All logic is moved to backend Cloud Functions to prevent Key leakage and Prompt Injection.
 
 /**
- * Generates section content/layout.
+ * Calls the backend function to generate section content.
  */
 export const generateSectionContent = async (
   request: GenerationRequest
 ): Promise<{ content: SectionContent; styles: any; variant: string }> => {
-  const ai = getClient();
-  
-  const model = request.isPro ? GeminiModel.PRO_PREVIEW : GeminiModel.FLASH_PREVIEW;
-  
-  const thinkingConfig = request.isPro 
-    ? { thinkingConfig: { thinkingBudget: 4000 } } 
-    : {};
-
-  const prompt = `
-    You are an expert UI/UX Designer.
-    Task: Generate a JSON configuration for a website section.
-    
-    Context:
-    - Type: ${request.type}
-    - Language: ${request.context.language}
-    - Brand Tone: ${request.context.brandTone}
-    - User Intent: ${request.userPrompt || "High conversion, clean design."}
-    
-    Output JSON. Ensure copy is professional.
-  `;
-
-  const response = await ai.models.generateContent({
-    model: model,
-    contents: prompt,
-    config: {
-      ...thinkingConfig,
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          variant: { type: Type.STRING },
-          content: {
-            type: Type.OBJECT,
-            properties: {
-              headline: { type: Type.STRING },
-              subheadline: { type: Type.STRING },
-              body: { type: Type.STRING },
-              buttonText: { type: Type.STRING },
-              items: {
-                type: Type.ARRAY,
-                items: {
-                    type: Type.OBJECT,
-                    properties: {
-                        title: { type: Type.STRING },
-                        desc: { type: Type.STRING }
-                    }
-                }
-              }
-            }
-          },
-          styles: {
-            type: Type.OBJECT,
-            properties: {
-              align: { type: Type.STRING },
-              backgroundColor: { type: Type.STRING },
-              textColor: { type: Type.STRING }
-            }
-          }
-        }
-      }
-    }
-  });
-
-  if (response.text) {
-    return JSON.parse(response.text);
+  try {
+    const generateFn = httpsCallable<GenerationRequest, { content: SectionContent; styles: any; variant: string }>(functions, 'generateSection');
+    const result = await generateFn(request);
+    return result.data;
+  } catch (error) {
+    console.error("Cloud Function Error (generateSection):", error);
+    throw new Error("AI service is currently unavailable. Please try again.");
   }
-  throw new Error("Failed to generate section content");
 };
 
 /**
- * Translates existing section content to a target language.
+ * Calls the backend function to translate content.
  */
 export const translateSectionContent = async (req: TranslationRequest): Promise<SectionContent> => {
-    const ai = getClient();
-
-    const prompt = `
-      Translate the following website content from ${req.sourceLanguage} to ${req.targetLanguage}.
-      Maintain the tone, length constraints, and marketing impact.
-      
-      Input JSON: ${JSON.stringify(req.content)}
-    `;
-
-    const response = await ai.models.generateContent({
-        model: GeminiModel.FLASH_PREVIEW,
-        contents: prompt,
-        config: {
-            responseMimeType: "application/json",
-            responseSchema: {
-                type: Type.OBJECT,
-                properties: {
-                    headline: { type: Type.STRING },
-                    subheadline: { type: Type.STRING },
-                    body: { type: Type.STRING },
-                    buttonText: { type: Type.STRING },
-                    items: {
-                        type: Type.ARRAY,
-                        items: {
-                            type: Type.OBJECT,
-                            properties: {
-                                title: { type: Type.STRING },
-                                desc: { type: Type.STRING }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    if (response.text) {
-        return JSON.parse(response.text);
-    }
-    throw new Error("Translation failed");
+  try {
+    const translateFn = httpsCallable<TranslationRequest, SectionContent>(functions, 'translateSection');
+    const result = await translateFn(req);
+    return result.data;
+  } catch (error) {
+    console.error("Cloud Function Error (translateSection):", error);
+    throw new Error("Translation service failed.");
+  }
 }
 
+/**
+ * Calls the backend function to generate images.
+ */
 export const generateSectionImage = async (req: ImageGenerationRequest): Promise<string> => {
-  const ai = getClient();
-  const model = GeminiModel.IMAGE_PRO;
-
-  const response = await ai.models.generateContent({
-    model: model,
-    contents: { parts: [{ text: req.prompt }] },
-    config: {
-      imageConfig: {
-        aspectRatio: req.aspectRatio,
-        imageSize: req.size
-      }
-    }
-  });
-
-  const parts = response.candidates?.[0]?.content?.parts;
-  if (parts) {
-    for (const part of parts) {
-      if (part.inlineData && part.inlineData.data) {
-        return `data:image/png;base64,${part.inlineData.data}`;
-      }
-    }
+  try {
+    const generateImageFn = httpsCallable<ImageGenerationRequest, { imageUrl: string }>(functions, 'generateImage');
+    const result = await generateImageFn(req);
+    return result.data.imageUrl;
+  } catch (error) {
+    console.error("Cloud Function Error (generateImage):", error);
+    throw new Error("Image generation failed.");
   }
-  throw new Error("No image generated");
 };
 
+/**
+ * Calls the backend function for chat assistance.
+ */
 export const chatAssistant = async (message: string, history: any[]): Promise<string> => {
-    const ai = getClient();
-    const response = await ai.models.generateContent({
-        model: GeminiModel.FLASH_PREVIEW,
-        contents: [
-            ...history,
-            { role: 'user', parts: [{ text: message }] }
-        ],
-        config: {
-            tools: [{ googleSearch: {} }],
-            systemInstruction: "You are a helpful Aether Site Builder assistant."
-        }
-    });
-    return response.text || "I couldn't process that request.";
+  try {
+    const chatFn = httpsCallable<{message: string, history: any[]}, { reply: string }>(functions, 'chatAssistant');
+    const result = await chatFn({ message, history });
+    return result.data.reply;
+  } catch (error) {
+    console.error("Cloud Function Error (chatAssistant):", error);
+    return "I'm having trouble connecting to the server right now.";
+  }
 };
