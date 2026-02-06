@@ -90,25 +90,25 @@ export const conversationFlow: Record<string, any> = {
   }
 };
 
+const createInitialAssistantMessage = (): ConversationMessage => ({
+  id: '1',
+  role: 'assistant',
+  content: "👋 Merhaba! Ben Aether AI, size harika bir web sitesi oluşturma konusunda yardımcı olacağım. Önce sizi biraz tanıyalım. Hangi tür bir web sitesi oluşturmak istiyorsunuz?",
+  timestamp: new Date(),
+  options: [
+    '🏢 İşletme/Kurumsal',
+    '🎨 Portfolio/Kişisel',
+    '📝 Blog',
+    '🛍️ E-ticaret',
+    '🚀 Landing Page',
+    '💡 Diğer'
+  ],
+  metadata: { step: OnboardingStep.WELCOME }
+});
+
 export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(OnboardingStep.WELCOME);
-  const [messages, setMessages] = useState<ConversationMessage[]>([
-    {
-      id: '1',
-      role: 'assistant',
-      content: "👋 Merhaba! Ben Aether AI, size harika bir web sitesi oluşturma konusunda yardımcı olacağım. Önce sizi biraz tanıyalım. Hangi tür bir web sitesi oluşturmak istiyorsunuz?",
-      timestamp: new Date(),
-      options: [
-        '🏢 İşletme/Kurumsal',
-        '🎨 Portfolio/Kişisel',
-        '📝 Blog',
-        '🛍️ E-ticaret',
-        '🚀 Landing Page',
-        '💡 Diğer'
-      ],
-      metadata: { step: OnboardingStep.WELCOME }
-    }
-  ]);
+  const [messages, setMessages] = useState<ConversationMessage[]>([createInitialAssistantMessage()]);
   const [siteProfile, setSiteProfile] = useState<Partial<SiteProfile>>({
     preferredLanguage: 'tr'
   });
@@ -127,6 +127,14 @@ export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setMessages(prev => [...prev, newMessage]);
     return newMessage;
   }, [currentStep]);
+
+  const resetOnboarding = useCallback(() => {
+    setCurrentStep(OnboardingStep.WELCOME);
+    setMessages([createInitialAssistantMessage()]);
+    setSiteProfile({ preferredLanguage: 'tr' });
+    setGenerationPlan(null);
+    setIsGenerating(false);
+  }, []);
 
   const sendMessage = useCallback(async (content: string) => {
     // Add user message
@@ -169,9 +177,26 @@ export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
       }, 500);
     }
-  }, [currentStep, addMessage]);
+  }, [currentStep, addMessage, resetOnboarding]);
 
   const selectOption = useCallback(async (option: string) => {
+    if (currentStep === OnboardingStep.REVIEW) {
+      if (option.includes('Baştan başla')) {
+        resetOnboarding();
+        return;
+      }
+
+      if (option.includes('Bilgileri düzenle')) {
+        setMessages(prev => prev.slice(0, -2));
+        setCurrentStep(OnboardingStep.CONTENT_DETAILS);
+        const stepConfig = conversationFlow[OnboardingStep.CONTENT_DETAILS];
+        if (stepConfig) {
+          addMessage('assistant', stepConfig.question, stepConfig.options);
+        }
+        return;
+      }
+    }
+
     addMessage('user', option);
 
     // Handle specific option selections
@@ -193,6 +218,8 @@ export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
           setSiteProfile(prev => ({ ...prev, logoUrl: 'AI_GENERATED' }));
         } else if (option.includes('atla')) {
           setSiteProfile(prev => ({ ...prev, logoUrl: undefined }));
+        } else if (option.includes('logomu yükleyeceğim')) {
+          return;
         }
         break;
 
@@ -221,7 +248,7 @@ export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
         }
       }, 500);
     }
-  }, [currentStep, addMessage]);
+  }, [currentStep, addMessage, resetOnboarding]);
 
   const showReview = useCallback(() => {
     const reviewMessage = `
@@ -324,6 +351,7 @@ Hazır mısınız? 🚀
       // Generate site plan using AI
       const plan = await generateSitePlan(siteProfile as SiteProfile);
       setGenerationPlan(plan);
+      setIsGenerating(false);
       
       // This will be handled by parent component to switch to builder
       addMessage('assistant', '✅ Siteniz hazır! Builder moduna geçiliyor...');
