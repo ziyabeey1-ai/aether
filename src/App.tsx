@@ -4,6 +4,11 @@ import { UserRole, User, WebsiteProject } from './types';
 import PublicLayout from './pages/public/PublicLayout';
 import BuilderLayout from './pages/builder/BuilderLayout';
 import LandingPage from './pages/public/LandingPage';
+import FeaturesPage from './pages/public/FeaturesPage';
+import PricingPage from './pages/public/PricingPage';
+import ShowcasePage from './pages/public/ShowcasePage';
+import PrivacyPage from './pages/public/PrivacyPage';
+import TermsPage from './pages/public/TermsPage';
 import OnboardingChat from './pages/onboarding/OnboardingChat';
 import { BuilderProvider } from './contexts/BuilderContext';
 import { OnboardingProvider, useOnboarding } from './contexts/OnboardingContext';
@@ -88,6 +93,11 @@ function App() {
             {/* Public Routes */}
             <Route path="/" element={<PublicLayout />}>
               <Route index element={<LandingPage />} />
+              <Route path="features" element={<FeaturesPage />} />
+              <Route path="pricing" element={<PricingPage />} />
+              <Route path="showcase" element={<ShowcasePage />} />
+              <Route path="privacy" element={<PrivacyPage />} />
+              <Route path="terms" element={<TermsPage />} />
             </Route>
 
             {/* Protected Builder Routes */}
