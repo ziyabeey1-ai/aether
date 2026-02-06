@@ -1,0 +1,8 @@
+{
+  "name": "Aether AI Builder",
+  "description": "A dual-mode platform featuring a premium public-facing SaaS website and a sophisticated internal AI-powered website builder using Google Gemini models.",
+  "requestFramePermissions": [
+    "microphone",
+    "camera"
+  ]
+}
