@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useRef, useEffect } from 'react';
+import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { 
   ConversationMessage, 
   SiteProfile, 
@@ -14,6 +14,7 @@ interface OnboardingContextType {
   siteProfile: Partial<SiteProfile>;
   generationPlan: GenerationPlan | null;
   isGenerating: boolean;
+  isEditMode: boolean; // New: Tracks if we are editing a single field
   
   // Actions
   sendMessage: (content: string) => Promise<void>;
@@ -27,6 +28,7 @@ interface OnboardingContextType {
 
 const OnboardingContext = createContext<OnboardingContextType | undefined>(undefined);
 
+// Define flow configuration
 export const conversationFlow: Record<string, any> = {
   [OnboardingStep.WELCOME]: {
     next: OnboardingStep.SITE_TYPE,
@@ -88,6 +90,19 @@ export const conversationFlow: Record<string, any> = {
     type: 'text',
     placeholder: 'İsteğe bağlı: Özel istekleriniz, referans siteler vs.',
     optional: true
+  },
+  [OnboardingStep.EDIT_MENU]: {
+    next: null, // Dynamic
+    question: "Hangi bilgiyi değiştirmek istersiniz?",
+    type: 'choice',
+    options: [
+      '🏢 Site Türü',
+      '🎯 Hedef & Amaç',
+      '🏷️ Marka Adı',
+      '🎨 Renk & Logo',
+      '📝 İçerik Detayları',
+      '↩️ Vazgeç (Geri Dön)'
+    ]
   }
 };
 
@@ -109,20 +124,18 @@ const createInitialAssistantMessage = (): ConversationMessage => ({
 
 export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(OnboardingStep.WELCOME);
+  const [stepHistory, setStepHistory] = useState<OnboardingStep[]>([]);
   const [messages, setMessages] = useState<ConversationMessage[]>([createInitialAssistantMessage()]);
   const [siteProfile, setSiteProfile] = useState<Partial<SiteProfile>>({
     preferredLanguage: 'tr'
   });
   const [generationPlan, setGenerationPlan] = useState<GenerationPlan | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
   
-  // New: History stack to properly handle navigation
-  const [stepHistory, setStepHistory] = useState<OnboardingStep[]>([]);
-  
-  // New: Ref to manage auto-advance timeouts
+  // Timeout reference for cleanup
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Clear timeout on unmount or reset
   const clearAutoAdvance = useCallback(() => {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -143,31 +156,7 @@ export const OnboardingProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return newMessage;
   }, [currentStep]);
 
-  const resetOnboarding = useCallback(() => {
-    clearAutoAdvance();
-    setCurrentStep(OnboardingStep.WELCOME);
-    setMessages([createInitialAssistantMessage()]);
-    setSiteProfile({ preferredLanguage: 'tr' });
-    setGenerationPlan(null);
-    setIsGenerating(false);
-    setStepHistory([]);
-  }, [clearAutoAdvance]);
-
-  const advanceStep = useCallback((nextStep: OnboardingStep) => {
-    setStepHistory(prev => [...prev, currentStep]);
-    setCurrentStep(nextStep);
-
-    const nextStepConfig = conversationFlow[nextStep];
-    if (nextStepConfig) {
-      addMessage('assistant', nextStepConfig.question, nextStepConfig.options);
-    } else if (nextStep === OnboardingStep.REVIEW) {
-      // We will trigger showReview from within the flow or useEffect
-      // But for simplicity in this architecture, let's call it manually if needed, 
-      // OR let the caller handle it.
-      // Here we assume the caller logic (sendMessage/selectOption) handles the "what to say next" logic via setTimeout
-    }
-  }, [currentStep, addMessage]);
-
+  // Hoisted showReview to avoid circular dependency in advanceToStep
   const showReview = useCallback(() => {
     const reviewMessage = `
 Harika! İşte topladığım bilgiler:
@@ -196,17 +185,139 @@ Hazır mısınız? 🚀
       '🔄 Baştan başla'
     ]);
     
-    // Don't push REVIEW to history recursively if we are already there or coming from edits
+    // Explicitly set these to ensure state consistency
     setCurrentStep(OnboardingStep.REVIEW);
+    setIsEditMode(false);
   }, [siteProfile, addMessage]);
+
+  // Centralized step advancement logic
+  const advanceToStep = useCallback((nextStep: OnboardingStep, delay = 500) => {
+    timerRef.current = setTimeout(() => {
+      // Push current step to history before moving, UNLESS we are going back to Review from Edit
+      if (nextStep !== OnboardingStep.REVIEW || !isEditMode) {
+         setStepHistory(prev => [...prev, currentStep]);
+      }
+      
+      setCurrentStep(nextStep);
+
+      // Handle Review Step specifically
+      if (nextStep === OnboardingStep.REVIEW) {
+        showReview();
+        // If we were editing, turn off edit mode upon returning to review
+        setIsEditMode(false);
+        return;
+      }
+
+      // Normal flow
+      const nextStepConfig = conversationFlow[nextStep];
+      if (nextStepConfig) {
+        addMessage('assistant', nextStepConfig.question, nextStepConfig.options);
+      }
+    }, delay);
+  }, [currentStep, isEditMode, addMessage, showReview]);
+
+  const startGeneration = useCallback(async () => {
+    clearAutoAdvance();
+    setIsGenerating(true);
+    setCurrentStep(OnboardingStep.GENERATING);
+    
+    addMessage('assistant', '🎨 Harika! Şimdi size özel web sitenizi oluşturuyorum...');
+
+    try {
+      const plan = await generateSitePlan(siteProfile as SiteProfile);
+      setGenerationPlan(plan);
+      setIsGenerating(false);
+      addMessage('assistant', '✅ Siteniz hazır! Builder moduna geçiliyor...');
+    } catch (error) {
+      addMessage('assistant', '❌ Oluşturma sırasında hata oluştu. Lütfen tekrar deneyin.');
+      setIsGenerating(false);
+    }
+  }, [siteProfile, addMessage, clearAutoAdvance]);
+
+  const goBack = useCallback(() => {
+    clearAutoAdvance();
+    
+    if (stepHistory.length === 0) return;
+
+    // Pop the last step from history
+    const previousStep = stepHistory[stepHistory.length - 1];
+    const newHistory = stepHistory.slice(0, -1);
+    
+    setStepHistory(newHistory);
+    setCurrentStep(previousStep);
+
+    // Clean up UI: Remove the last question and the user's answer that led to it
+    setMessages(prev => {
+      // Heuristic: Remove until we hit the user's last input
+      // Ideally we would snapshot messages history too, but for MVP this suffices
+      return prev.slice(0, -2);
+    });
+    
+    // If we went back from an Edit flow, turn off edit mode
+    if (isEditMode && previousStep === OnboardingStep.REVIEW) {
+        setIsEditMode(false);
+    }
+
+  }, [stepHistory, clearAutoAdvance, isEditMode]);
+
+  const resetOnboarding = useCallback(() => {
+    clearAutoAdvance();
+    setCurrentStep(OnboardingStep.WELCOME);
+    setStepHistory([]);
+    setMessages([createInitialAssistantMessage()]);
+    setSiteProfile({ preferredLanguage: 'tr' });
+    setGenerationPlan(null);
+    setIsGenerating(false);
+    setIsEditMode(false);
+  }, [clearAutoAdvance]);
+
+  const uploadLogo = useCallback(async (file: File) => {
+    clearAutoAdvance();
+    try {
+      const downloadUrl = await uploadImageToLocalStorage(file);
+      
+      setSiteProfile(prev => ({ 
+        ...prev, 
+        logoFile: file,
+        logoUrl: downloadUrl 
+      }));
+      
+      addMessage('user', '✅ Logo başarıyla yüklendi');
+      
+      // If we are in edit mode, go back to Review, otherwise go next
+      const nextTarget = isEditMode ? OnboardingStep.REVIEW : conversationFlow[currentStep]?.next;
+
+      if (nextTarget) {
+        // Slightly longer delay for upload confirmation
+        advanceToStep(nextTarget, 1500); 
+      }
+    } catch (error) {
+      console.error(error);
+      addMessage('assistant', '❌ Logo yüklenirken hata oluştu. Lütfen tekrar deneyin.');
+    }
+  }, [currentStep, addMessage, advanceToStep, isEditMode, clearAutoAdvance]);
+
+  const skipStep = useCallback(() => {
+    clearAutoAdvance();
+    const stepConfig = conversationFlow[currentStep];
+    
+    if (stepConfig?.optional) {
+      addMessage('user', '⏭️ Atla');
+      
+      const nextTarget = isEditMode ? OnboardingStep.REVIEW : stepConfig.next;
+      if (nextTarget) {
+        advanceToStep(nextTarget, 300);
+      }
+    }
+  }, [currentStep, addMessage, advanceToStep, isEditMode, clearAutoAdvance]);
 
   const sendMessage = useCallback(async (content: string) => {
     clearAutoAdvance();
     addMessage('user', content);
 
-    // Update profile based on current step
     const stepConfig = conversationFlow[currentStep];
     
+    // Update profile Logic
     switch (currentStep) {
       case OnboardingStep.SITE_TYPE:
         setSiteProfile(prev => ({ ...prev, sitePurpose: content }));
@@ -229,46 +340,71 @@ Hazır mısınız? 🚀
         break;
     }
 
-    // Move to next step
-    if (stepConfig && stepConfig.next) {
-      timerRef.current = setTimeout(() => {
-        if (stepConfig.next === OnboardingStep.REVIEW) {
-          showReview();
-        } else {
-          advanceStep(stepConfig.next);
-        }
-      }, 500);
+    // Navigation Logic
+    if (isEditMode) {
+      // If editing, always go back to review after input
+      advanceToStep(OnboardingStep.REVIEW);
+    } else if (stepConfig && stepConfig.next) {
+      // Normal Flow
+      advanceToStep(stepConfig.next);
     }
-  }, [currentStep, addMessage, resetOnboarding, advanceStep, showReview, clearAutoAdvance]);
+  }, [currentStep, addMessage, clearAutoAdvance, isEditMode, advanceToStep]);
 
   const selectOption = useCallback(async (option: string) => {
     clearAutoAdvance();
 
+    // REVIEW SCREEN ACTIONS
     if (currentStep === OnboardingStep.REVIEW) {
       if (option.includes('Baştan başla')) {
         resetOnboarding();
         return;
       }
-
       if (option.includes('Bilgileri düzenle')) {
-        // Just reset to the beginning for simple editing in this linear flow,
-        // OR go back to Content Details. 
-        // A better UX is to present a menu of what to edit, but for MVP:
-        setMessages(prev => prev.slice(0, -2)); // Remove review msg
-        setCurrentStep(OnboardingStep.CONTENT_DETAILS); // Jump back a bit
+        // Go to Edit Menu
+        setMessages(prev => prev.slice(0, -1)); // Remove the "Yes/No" options bubble to clean up
+        setStepHistory(prev => [...prev, OnboardingStep.REVIEW]);
+        setCurrentStep(OnboardingStep.EDIT_MENU);
         
-        // Add prompt
-        const stepConfig = conversationFlow[OnboardingStep.CONTENT_DETAILS];
-        if (stepConfig) {
-          addMessage('assistant', stepConfig.question, stepConfig.options);
-        }
+        const editConfig = conversationFlow[OnboardingStep.EDIT_MENU];
+        addMessage('assistant', editConfig.question, editConfig.options);
+        return;
+      }
+      if (option.includes('oluştur')) {
+        startGeneration();
         return;
       }
     }
 
+    // EDIT MENU ACTIONS
+    if (currentStep === OnboardingStep.EDIT_MENU) {
+      if (option.includes('Vazgeç')) {
+        goBack();
+        return;
+      }
+      
+      setIsEditMode(true);
+      let targetStep: OnboardingStep | null = null;
+      
+      if (option.includes('Site Türü')) targetStep = OnboardingStep.WELCOME; // Restarting type selection
+      if (option.includes('Hedef')) targetStep = OnboardingStep.SITE_TYPE; // Purpose is set after Type
+      if (option.includes('Marka')) targetStep = OnboardingStep.TARGET_AUDIENCE; // Name is set after Audience
+      if (option.includes('Renk')) targetStep = OnboardingStep.LOGO_UPLOAD; // Color is set after Logo
+      if (option.includes('İçerik')) targetStep = OnboardingStep.CONTENT_DETAILS;
+
+      if (targetStep) {
+        // We jump to the step. Since isEditMode is true, the sendMessage at that step 
+        // will redirect back to REVIEW instead of the natural next step.
+        const config = conversationFlow[targetStep];
+        setStepHistory(prev => [...prev, OnboardingStep.EDIT_MENU]);
+        setCurrentStep(targetStep);
+        addMessage('assistant', config.question, config.options);
+      }
+      return;
+    }
+
     addMessage('user', option);
 
-    // Handle specific option selections
+    // PROFILE UPDATES FROM OPTIONS
     switch (currentStep) {
       case OnboardingStep.WELCOME:
         const siteTypeMap: Record<string, SiteProfile['siteType']> = {
@@ -288,8 +424,7 @@ Hazır mısınız? 🚀
         } else if (option.includes('atla')) {
           setSiteProfile(prev => ({ ...prev, logoUrl: undefined }));
         } else if (option.includes('logomu yükleyeceğim')) {
-          // Do not advance; wait for upload
-          return;
+          return; // Wait for upload
         }
         break;
 
@@ -305,105 +440,23 @@ Hazır mısınız? 🚀
         break;
     }
 
-    // Move to next step
+    // NAVIGATION LOGIC
     const stepConfig = conversationFlow[currentStep];
-    if (stepConfig?.next) {
-      timerRef.current = setTimeout(() => {
-        if (stepConfig.next === OnboardingStep.REVIEW) {
-          showReview();
-        } else {
-          advanceStep(stepConfig.next);
-        }
-      }, 500);
+    
+    if (isEditMode) {
+      // If we are editing, we generally return to review after one selection
+      // UNLESS the step has sub-steps (like Welcome -> Site Type). 
+      // For MVP simplicity, we assume editing a choice field returns to review.
+      advanceToStep(OnboardingStep.REVIEW);
+    } else if (stepConfig?.next) {
+      advanceToStep(stepConfig.next);
     }
-  }, [currentStep, addMessage, resetOnboarding, advanceStep, showReview, clearAutoAdvance]);
+
+  }, [currentStep, addMessage, resetOnboarding, advanceToStep, startGeneration, goBack, isEditMode, clearAutoAdvance]);
 
   const updateProfile = useCallback((updates: Partial<SiteProfile>) => {
     setSiteProfile(prev => ({ ...prev, ...updates }));
   }, []);
-
-  const uploadLogo = useCallback(async (file: File) => {
-    clearAutoAdvance();
-    try {
-      // PROD UPDATE: Upload to Cloud Storage instead of Base64
-      const downloadUrl = await uploadImageToLocalStorage(file); // Note: Function name kept for compatibility but implementation changed to Storage
-      
-      setSiteProfile(prev => ({ 
-        ...prev, 
-        logoFile: file,
-        logoUrl: downloadUrl 
-      }));
-      
-      addMessage('user', '✅ Logo başarıyla yüklendi');
-      
-      // Auto-advance to next step
-      const stepConfig = conversationFlow[currentStep];
-      if (stepConfig?.next) {
-        timerRef.current = setTimeout(() => {
-          advanceStep(stepConfig.next);
-        }, 500);
-      }
-    } catch (error) {
-      console.error(error);
-      addMessage('assistant', '❌ Logo yüklenirken hata oluştu. Lütfen tekrar deneyin.');
-    }
-  }, [currentStep, addMessage, advanceStep, clearAutoAdvance]);
-
-  const skipStep = useCallback(() => {
-    clearAutoAdvance();
-    const stepConfig = conversationFlow[currentStep];
-    
-    if (stepConfig?.optional && stepConfig.next) {
-      addMessage('user', '⏭️ Atla');
-      timerRef.current = setTimeout(() => {
-         if (stepConfig.next === OnboardingStep.REVIEW) {
-          showReview();
-        } else {
-          advanceStep(stepConfig.next);
-        }
-      }, 300);
-    }
-  }, [currentStep, addMessage, showReview, advanceStep, clearAutoAdvance]);
-
-  const goBack = useCallback(() => {
-    clearAutoAdvance();
-    
-    if (stepHistory.length === 0) return;
-
-    // Pop the last step from history
-    const previousStep = stepHistory[stepHistory.length - 1];
-    const newHistory = stepHistory.slice(0, -1);
-    
-    setStepHistory(newHistory);
-    setCurrentStep(previousStep);
-
-    // Remove last user message and assistant response to keep UI clean
-    // This is a simplification; a real chat might keep history and just scroll up
-    setMessages(prev => {
-        // Heuristic: remove until we find the start of the previous step's interaction
-        // For MVP: remove last 2 messages (User response + New Assistant Question)
-        return prev.slice(0, -2);
-    });
-    
-  }, [stepHistory, clearAutoAdvance]);
-
-  const startGeneration = useCallback(async () => {
-    clearAutoAdvance();
-    setIsGenerating(true);
-    setCurrentStep(OnboardingStep.GENERATING);
-    
-    addMessage('assistant', '🎨 Harika! Şimdi size özel web sitenizi oluşturuyorum...');
-
-    try {
-      const plan = await generateSitePlan(siteProfile as SiteProfile);
-      setGenerationPlan(plan);
-      setIsGenerating(false);
-      addMessage('assistant', '✅ Siteniz hazır! Builder moduna geçiliyor...');
-    } catch (error) {
-      addMessage('assistant', '❌ Oluşturma sırasında hata oluştu. Lütfen tekrar deneyin.');
-      setIsGenerating(false);
-    }
-  }, [siteProfile, addMessage, clearAutoAdvance]);
 
   return (
     <OnboardingContext.Provider
@@ -413,6 +466,7 @@ Hazır mısınız? 🚀
         siteProfile,
         generationPlan,
         isGenerating,
+        isEditMode,
         sendMessage,
         selectOption,
         updateProfile,
