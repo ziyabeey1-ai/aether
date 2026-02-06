@@ -1,6 +1,4 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+/* @tailwind directives removed to rely on CDN */
 
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
