@@ -65,21 +65,36 @@ const AppFlowController: React.FC<{ user: User }> = ({ user }) => {
 };
 
 function App() {
-  const [user, setUser] = useState<User | null>(null);
+  // Initialize user from localStorage to persist session
+  const [user, setUser] = useState<User | null>(() => {
+    try {
+      const savedUser = localStorage.getItem('aether_user');
+      return savedUser ? JSON.parse(savedUser) : null;
+    } catch (e) {
+      console.error("Failed to parse user from storage", e);
+      return null;
+    }
+  });
+  
   const [isLoading, setIsLoading] = useState(false);
 
   const login = () => {
-    setUser({
+    const newUser: User = {
       id: '123',
       name: 'Demo User',
       email: 'demo@example.com',
       role: UserRole.PRO,
       tokens: 1000,
       avatarUrl: 'https://picsum.photos/32/32'
-    });
+    };
+    setUser(newUser);
+    localStorage.setItem('aether_user', JSON.stringify(newUser));
   };
 
-  const logout = () => setUser(null);
+  const logout = () => {
+    setUser(null);
+    localStorage.removeItem('aether_user');
+  };
 
   if (isLoading) {
     return <div className="h-screen flex items-center justify-center bg-slate-50 text-slate-400">Loading Aether...</div>;
